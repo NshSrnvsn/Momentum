@@ -177,6 +177,8 @@ with st.sidebar:
                 data["habits"].append({"id": str(uuid.uuid4()), "name": name, "color": new_color})
                 save_data(data)
                 st.session_state.pop("dup_warn", None)
+                # reset color picker so next habit gets next suggested colour
+                st.session_state.pop("new_color", None)
                 st.rerun()
 
     if "dup_warn" in st.session_state:
@@ -190,6 +192,7 @@ with st.sidebar:
                                        "color": new_color})
                 save_data(data)
                 st.session_state.pop("dup_warn")
+                st.session_state.pop("new_color", None)
                 st.rerun()
         with cb:
             if st.button("Cancel"):
@@ -228,57 +231,87 @@ tab_daily, tab_cal, tab_weekly, tab_monthly, tab_goals = st.tabs([
 
 
 # ── TAB: DAILY LOG ────────────────────────────────────────────────
-with tab_daily:
+STATUS_OPTIONS = [
+    ("✗ Skip",    0,   "#e5e7eb", "#374151"),
+    ("▷ Started", 33,  "#dbeafe", "#1d4ed8"),
+    ("◕ Almost",  66,  "#fef3c7", "#d97706"),
+    ("✓ Done",    100, "#dcfce7", "#15803d"),
+]
+
+def progress_to_status(prog: int) -> int:
+    """Return the index in STATUS_OPTIONS closest to prog."""
+    return min(range(len(STATUS_OPTIONS)), key=lambda i: abs(STATUS_OPTIONS[i][1] - prog))
+
+@st.fragment
+def daily_log_fragment():
     today = date.today()
-    sel_date: date = st.date_input("Date", value=today, max_value=today, key="daily_date", label_visibility="visible")
+    sel_date: date = st.date_input("Date", value=today, max_value=today,
+                                   key="daily_date", label_visibility="visible")
     iso = sel_date.strftime("%Y-%m-%d")
 
     if sel_date > today:
         st.error("🚀 You can't time travel! Please select today or a past date.")
-        st.stop()
+        return
 
     st.subheader(f"Habits for {iso}")
 
     if not data["habits"]:
         st.info("Add habits in the sidebar to start tracking!")
-    else:
-        if iso not in data["checkins"]:
-            data["checkins"][iso] = {}
+        return
 
-        changed_daily = False
-        for habit in data["habits"]:
-            hid   = habit["id"]
-            entry = normalize_entry(data["checkins"][iso].get(hid))
+    if iso not in data["checkins"]:
+        data["checkins"][iso] = {}
 
-            with st.container(border=True):
-                h1, h2 = st.columns([6, 1])
-                with h1:
-                    st.markdown(color_dot(habit["color"], 16) + f"**{habit['name']}**",
-                                unsafe_allow_html=True)
-                with h2:
-                    st.markdown(f"<span style='font-size:1.5rem'>{entry['progress']}%</span>",
-                                unsafe_allow_html=True)
+    for habit in data["habits"]:
+        hid   = habit["id"]
+        entry = normalize_entry(data["checkins"][iso].get(hid))
+        cur_status = progress_to_status(entry["progress"])
 
-                prog = st.slider(
-                    "Completion %", 0, 100, entry["progress"],
-                    key=f"prog_{hid}_{iso}",
-                    label_visibility="collapsed",
-                )
-                note = st.text_area(
-                    "Notes", value=entry["note"],
-                    placeholder=f"Notes for {habit['name']} on {iso}…",
-                    key=f"note_{hid}_{iso}",
-                    height=75,
-                    label_visibility="collapsed",
+        with st.container(border=True):
+            h1, h2 = st.columns([7, 2])
+            with h1:
+                st.markdown(color_dot(habit["color"], 16) + f"**{habit['name']}**",
+                            unsafe_allow_html=True)
+            with h2:
+                label, pct, bg, fg = STATUS_OPTIONS[cur_status]
+                st.markdown(
+                    f"<span style='background:{bg};color:{fg};padding:3px 10px;"
+                    f"border-radius:999px;font-size:0.85rem;font-weight:600'>{label}</span>",
+                    unsafe_allow_html=True,
                 )
 
-                new_entry = {"progress": prog, "note": note}
-                if new_entry != entry:
-                    data["checkins"][iso][hid] = new_entry
-                    changed_daily = True
+            # One-click status buttons
+            cols = st.columns(len(STATUS_OPTIONS))
+            new_status = cur_status
+            for idx, (lbl, pct, bg, fg) in enumerate(STATUS_OPTIONS):
+                with cols[idx]:
+                    active = idx == cur_status
+                    border = f"2px solid {fg}" if active else "1px solid #e5e7eb"
+                    if st.button(
+                        lbl,
+                        key=f"status_{hid}_{iso}_{idx}",
+                        use_container_width=True,
+                        help=f"{pct}% complete",
+                    ):
+                        new_status = idx
 
-        if changed_daily:
-            save_data(data)
+            new_prog = STATUS_OPTIONS[new_status][1]
+
+            note = st.text_area(
+                "Notes", value=entry["note"],
+                placeholder=f"Notes for {habit['name']} on {iso}…",
+                key=f"note_{hid}_{iso}",
+                height=75,
+                label_visibility="collapsed",
+            )
+
+            new_entry = {"progress": new_prog, "note": note}
+            if new_entry != entry:
+                data["checkins"][iso][hid] = new_entry
+                save_data(data)
+
+with tab_daily:
+    daily_log_fragment()
 
 
 # ── TAB: CALENDAR ─────────────────────────────────────────────────

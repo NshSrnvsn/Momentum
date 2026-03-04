@@ -1,26 +1,32 @@
-# Habit Tracker
+# Momentum - A Habit Tracker
 
-A simple React + Vite habit tracker with:
+A streamlit application that can help you record your habits per day and analyse weekly and monthly goals.
 
-- Notes section at the top
 - Daily habit checklist
-- Color-coded calendar overview
-- Local storage persistence
+- Calendar overview
+- Goal setting
+- Monthly and weekly goal completion analysis
 
 ## Run locally
 
 ```bash
-npm install
-npm run dev
+pip install -r requirements.txt
+streamlit run app.py
 ```
 
-Then open the localhost URL shown in the terminal (usually `http://localhost:5173`).
+Then open `http://localhost:8501` in your browser.
+
+> Data is saved locally to `tracker_data.json` in the project root.
 
 ## Build
 
+No build step required. Install dependencies and run directly:
+
 ```bash
-npm run build
-npm run preview
+pip install -r requirements.txt
 ```
 
-This setup is ready for later deployment to GitHub Pages or another static host.
+## Deploy
+
+Live at: https://moomentum.streamlit.app
+
