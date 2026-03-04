@@ -8,3 +8,6 @@ __pycache__/
 .venv/
 venv/
 tracker_data.json
+
+# Streamlit secrets (contains API keys)
+.streamlit/secrets.toml

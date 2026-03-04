@@ -1,38 +1,144 @@
 import math
-import os
-import json
 import uuid
 import calendar as cal_module
 import streamlit.components.v1 as components
 import streamlit as st
 from datetime import date, timedelta
+from supabase import create_client, Client
 
 # ── page config (must be first Streamlit call) ────────────────────
 st.set_page_config(page_title="Habit Tracker", page_icon="✅", layout="wide")
 
 # ── constants ─────────────────────────────────────────────────────
-DATA_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tracker_data.json")
 DEFAULT_COLORS = ['#2563eb', '#16a34a', '#d97706', '#db2777', '#7c3aed', '#0891b2', '#ea580c']
 
+# ── Supabase clients ──────────────────────────────────────────────
+@st.cache_resource
+def get_auth_client() -> Client:
+    """Anon-key client — used only for auth.sign_in / sign_up."""
+    return create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
+
+
+@st.cache_resource
+def get_supabase() -> Client:
+    """Service-role client — full DB access, filtered manually by user_id."""
+    return create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_SERVICE_KEY"])
+
+
+# ── auth wall ─────────────────────────────────────────────────────
+def auth_wall():
+    """Show login/signup if not authenticated. Returns on success, st.stop() otherwise."""
+    if "user_id" in st.session_state:
+        return
+
+    st.markdown(
+        "<h1 style='text-align:center;margin-top:3rem'>🏃 Momentum</h1>"
+        "<p style='text-align:center;color:#6b7280'>Your personal habit tracker</p>",
+        unsafe_allow_html=True,
+    )
+    col = st.columns([1, 2, 1])[1]
+    with col:
+        tab_in, tab_up = st.tabs(["Log In", "Sign Up"])
+
+        with tab_in:
+            email = st.text_input("Email", key="li_email")
+            pwd   = st.text_input("Password", type="password", key="li_pwd")
+            if st.button("Log In", type="primary", use_container_width=True):
+                try:
+                    res = get_auth_client().auth.sign_in_with_password(
+                        {"email": email, "password": pwd}
+                    )
+                    st.session_state.user_id    = res.user.id
+                    st.session_state.user_email = res.user.email
+                    st.rerun()
+                except Exception:
+                    st.error("Invalid email or password.")
+
+        with tab_up:
+            email = st.text_input("Email", key="su_email")
+            pwd   = st.text_input("Password", type="password", key="su_pwd")
+            st.caption("Password must be at least 6 characters.")
+            if st.button("Create Account", type="primary", use_container_width=True):
+                try:
+                    get_auth_client().auth.sign_up({"email": email, "password": pwd})
+                    st.success("Account created! Check your email to confirm, then log in.")
+                except Exception as e:
+                    st.error(f"Sign up failed: {e}")
+
+    st.stop()
+
+
 # ── data persistence ──────────────────────────────────────────────
-def load_data():
-    if os.path.exists(DATA_PATH):
-        try:
-            with open(DATA_PATH) as f:
-                return json.load(f)
-        except Exception:
-            pass
-    return {"habits": [], "checkins": {}, "goals": {}}
+def load_data(user_id: str) -> dict:
+    sb = get_supabase()
+    habits_rows  = (
+        sb.table("habits").select("id,name,color")
+        .eq("user_id", user_id).order("created_at").execute().data or []
+    )
+    checkin_rows = (
+        sb.table("checkins").select("date,habit_id,progress,note")
+        .eq("user_id", user_id).execute().data or []
+    )
+    goal_rows = (
+        sb.table("goals").select("habit_id,weekly_target")
+        .eq("user_id", user_id).execute().data or []
+    )
+
+    checkins: dict = {}
+    for row in checkin_rows:
+        d = row["date"]
+        if d not in checkins:
+            checkins[d] = {}
+        checkins[d][row["habit_id"]] = {"progress": row["progress"], "note": row["note"]}
+
+    goals: dict = {
+        row["habit_id"]: {"weeklyTarget": row["weekly_target"]} for row in goal_rows
+    }
+    return {
+        "habits":   [{"id": h["id"], "name": h["name"], "color": h["color"]} for h in habits_rows],
+        "checkins": checkins,
+        "goals":    goals,
+    }
 
 
-def save_data(d):
-    with open(DATA_PATH, "w") as f:
-        json.dump(d, f, indent=2)
+def save_habit_add(habit: dict, user_id: str):
+    get_supabase().table("habits").insert(
+        {"id": habit["id"], "name": habit["name"], "color": habit["color"], "user_id": user_id}
+    ).execute()
 
+
+def save_habit_delete(hid: str):
+    # ON DELETE CASCADE removes related checkins and goals automatically
+    get_supabase().table("habits").delete().eq("id", hid).execute()
+
+
+def save_checkin(iso: str, hid: str, entry: dict, user_id: str):
+    get_supabase().table("checkins").upsert(
+        {
+            "date": iso, "habit_id": hid,
+            "progress": entry["progress"], "note": entry["note"],
+            "user_id": user_id,
+        },
+        on_conflict="date,habit_id",
+    ).execute()
+
+
+def save_goal(hid: str, weekly_target: int, user_id: str):
+    get_supabase().table("goals").upsert(
+        {"habit_id": hid, "weekly_target": weekly_target, "user_id": user_id},
+        on_conflict="habit_id",
+    ).execute()
+
+
+# ── auth ──────────────────────────────────────────────────────────
+auth_wall()  # stops page here if not logged in
+user_id = st.session_state.user_id
 
 # ── session state ─────────────────────────────────────────────────
-if "data" not in st.session_state:
-    st.session_state.data = load_data()
+# Reload data when user changes (e.g. after logout/login)
+if "data" not in st.session_state or st.session_state.get("data_user") != user_id:
+    st.session_state.data      = load_data(user_id)
+    st.session_state.data_user = user_id
 
 data = st.session_state.data
 
@@ -160,6 +266,11 @@ def color_dot(color: str, size: int = 14) -> str:
 # ═════════════════════════════════════════════════════════════════
 with st.sidebar:
     st.title("Momentum")
+    st.caption(st.session_state.get("user_email", ""))
+    if st.button("Log Out", use_container_width=True):
+        for key in ["user_id", "user_email", "data", "data_user"]:
+            st.session_state.pop(key, None)
+        st.rerun()
     st.divider()
 
     st.subheader("Add a Habit for the day")
@@ -174,8 +285,9 @@ with st.sidebar:
             if name.lower() in existing_lower:
                 st.session_state["dup_warn"] = name
             else:
-                data["habits"].append({"id": str(uuid.uuid4()), "name": name, "color": new_color})
-                save_data(data)
+                new_habit = {"id": str(uuid.uuid4()), "name": name, "color": new_color}
+                data["habits"].append(new_habit)
+                save_habit_add(new_habit, user_id)
                 st.session_state.pop("dup_warn", None)
                 # reset color picker so next habit gets next suggested colour
                 st.session_state.pop("new_color", None)
@@ -187,10 +299,9 @@ with st.sidebar:
         ca, cb = st.columns(2)
         with ca:
             if st.button("Add Anyway"):
-                data["habits"].append({"id": str(uuid.uuid4()),
-                                       "name": st.session_state["dup_warn"],
-                                       "color": new_color})
-                save_data(data)
+                new_habit = {"id": str(uuid.uuid4()), "name": st.session_state["dup_warn"], "color": new_color}
+                data["habits"].append(new_habit)
+                save_habit_add(new_habit, user_id)
                 st.session_state.pop("dup_warn")
                 st.session_state.pop("new_color", None)
                 st.rerun()
@@ -211,10 +322,11 @@ with st.sidebar:
                             unsafe_allow_html=True)
             with c2:
                 if st.button("✕", key=f"rm_{habit['id']}", help="Remove"):
-                    data["habits"] = [h for h in data["habits"] if h["id"] != habit["id"]]
+                    hid_rm = habit["id"]
+                    data["habits"] = [h for h in data["habits"] if h["id"] != hid_rm]
                     for day in data["checkins"]:
-                        data["checkins"][day].pop(habit["id"], None)
-                    save_data(data)
+                        data["checkins"][day].pop(hid_rm, None)
+                    save_habit_delete(hid_rm)
                     st.rerun()
 
 
@@ -308,7 +420,7 @@ def daily_log_fragment():
             new_entry = {"progress": new_prog, "note": note}
             if new_entry != entry:
                 data["checkins"][iso][hid] = new_entry
-                save_data(data)
+                save_checkin(iso, hid, new_entry, st.session_state.user_id)
 
 with tab_daily:
     daily_log_fragment()
@@ -526,8 +638,8 @@ with tab_goals:
                     if hid not in data["goals"]:
                         data["goals"][hid] = {}
                     data["goals"][hid]["weeklyTarget"] = int(val)
+                    save_goal(hid, int(val), user_id)
                     goals_changed = True
 
         if goals_changed:
-            save_data(data)
             st.toast("Goals saved!", icon="🎯")
