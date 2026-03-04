@@ -1,13 +1,18 @@
 import math
 import uuid
+import json
 import calendar as cal_module
 import streamlit.components.v1 as components
 import streamlit as st
 from datetime import date, timedelta
 from supabase import create_client, Client
+from streamlit_cookies_controller import CookieController
 
 # ── page config (must be first Streamlit call) ────────────────────
-st.set_page_config(page_title="Habit Tracker", page_icon="✅", layout="wide")
+st.set_page_config(page_title="Momentum", page_icon="✅", layout="wide")
+
+# ── cookie controller (must be instantiated at top level) ─────────
+cookie_ctrl = CookieController(key="momentum_cookies")
 
 # ── constants ─────────────────────────────────────────────────────
 DEFAULT_COLORS = ['#2563eb', '#16a34a', '#d97706', '#db2777', '#7c3aed', '#0891b2', '#ea580c']
@@ -26,11 +31,36 @@ def get_supabase() -> Client:
 
 
 # ── auth wall ─────────────────────────────────────────────────────
+_COOKIE_NAME   = "momentum_auth"
+_COOKIE_MAX_AGE = 30 * 24 * 3600  # 30 days
+
 def auth_wall():
     """Show login/signup if not authenticated. Returns on success, st.stop() otherwise."""
     if "user_id" in st.session_state:
         return
 
+    # ── try to restore session from cookie ────────────────────────
+    saved = cookie_ctrl.get(_COOKIE_NAME)
+    if saved:
+        try:
+            tokens = json.loads(saved) if isinstance(saved, str) else saved
+            auth_c = get_auth_client()
+            try:
+                res = auth_c.auth.set_session(tokens["access_token"], tokens["refresh_token"])
+            except Exception:
+                res = auth_c.auth.refresh_session(tokens["refresh_token"])
+            st.session_state.user_id    = res.user.id
+            st.session_state.user_email = res.user.email
+            # Refresh cookie with latest tokens
+            cookie_ctrl.set(_COOKIE_NAME, json.dumps({
+                "access_token":  res.session.access_token,
+                "refresh_token": res.session.refresh_token,
+            }), max_age=_COOKIE_MAX_AGE)
+            return
+        except Exception:
+            cookie_ctrl.remove(_COOKIE_NAME)
+
+    # ── login / signup UI ─────────────────────────────────────────
     st.markdown(
         "<h1 style='text-align:center;margin-top:3rem'>🏃 Momentum</h1>"
         "<p style='text-align:center;color:#6b7280'>Your personal habit tracker</p>",
@@ -50,6 +80,10 @@ def auth_wall():
                     )
                     st.session_state.user_id    = res.user.id
                     st.session_state.user_email = res.user.email
+                    cookie_ctrl.set(_COOKIE_NAME, json.dumps({
+                        "access_token":  res.session.access_token,
+                        "refresh_token": res.session.refresh_token,
+                    }), max_age=_COOKIE_MAX_AGE)
                     st.rerun()
                 except Exception:
                     st.error("Invalid email or password.")
@@ -137,10 +171,35 @@ user_id = st.session_state.user_id
 # ── session state ─────────────────────────────────────────────────
 # Reload data when user changes (e.g. after logout/login)
 if "data" not in st.session_state or st.session_state.get("data_user") != user_id:
-    st.session_state.data      = load_data(user_id)
-    st.session_state.data_user = user_id
+    st.session_state.data             = load_data(user_id)
+    st.session_state.data_user        = user_id
+    st.session_state.pending_checkins = {}   # {(iso, hid): entry}
+    st.session_state.pending_goals    = {}   # {hid: weekly_target}
+
+if "pending_checkins" not in st.session_state:
+    st.session_state.pending_checkins = {}
+if "pending_goals" not in st.session_state:
+    st.session_state.pending_goals = {}
 
 data = st.session_state.data
+
+
+# ── debounced DB flush (runs every 3 s in background) ────────────
+@st.fragment(run_every="3s")
+def db_flush_fragment():
+    uid              = st.session_state.get("user_id")
+    pending_checkins = st.session_state.get("pending_checkins", {})
+    pending_goals    = st.session_state.get("pending_goals", {})
+    if not uid or (not pending_checkins and not pending_goals):
+        return
+    for (iso, hid), entry in list(pending_checkins.items()):
+        save_checkin(iso, hid, entry, uid)
+    for hid, target in list(pending_goals.items()):
+        save_goal(hid, target, uid)
+    st.session_state.pending_checkins = {}
+    st.session_state.pending_goals    = {}
+
+db_flush_fragment()
 
 # ── helpers ───────────────────────────────────────────────────────
 def normalize_entry(raw):
@@ -268,6 +327,7 @@ with st.sidebar:
     st.title("Momentum")
     st.caption(st.session_state.get("user_email", ""))
     if st.button("Log Out", use_container_width=True):
+        cookie_ctrl.remove(_COOKIE_NAME)
         for key in ["user_id", "user_email", "data", "data_user"]:
             st.session_state.pop(key, None)
         st.rerun()
@@ -289,8 +349,8 @@ with st.sidebar:
                 data["habits"].append(new_habit)
                 save_habit_add(new_habit, user_id)
                 st.session_state.pop("dup_warn", None)
-                # reset color picker so next habit gets next suggested colour
                 st.session_state.pop("new_color", None)
+                st.session_state.pop("new_name", None)
                 st.rerun()
 
     if "dup_warn" in st.session_state:
@@ -304,6 +364,7 @@ with st.sidebar:
                 save_habit_add(new_habit, user_id)
                 st.session_state.pop("dup_warn")
                 st.session_state.pop("new_color", None)
+                st.session_state.pop("new_name", None)
                 st.rerun()
         with cb:
             if st.button("Cancel"):
@@ -344,10 +405,8 @@ tab_daily, tab_cal, tab_weekly, tab_monthly, tab_goals = st.tabs([
 
 # ── TAB: DAILY LOG ────────────────────────────────────────────────
 STATUS_OPTIONS = [
-    ("✗ Skip",    0,   "#e5e7eb", "#374151"),
-    ("▷ Started", 33,  "#dbeafe", "#1d4ed8"),
-    ("◕ Almost",  66,  "#fef3c7", "#d97706"),
-    ("✓ Done",    100, "#dcfce7", "#15803d"),
+    ("✗ Skip", 0,   "#e5e7eb", "#374151"),
+    ("✓ Done", 100, "#dcfce7", "#15803d"),
 ]
 
 def progress_to_status(prog: int) -> int:
@@ -420,7 +479,8 @@ def daily_log_fragment():
             new_entry = {"progress": new_prog, "note": note}
             if new_entry != entry:
                 data["checkins"][iso][hid] = new_entry
-                save_checkin(iso, hid, new_entry, st.session_state.user_id)
+                st.session_state.pending_checkins[(iso, hid)] = new_entry
+                st.rerun()  # full rerun so calendar, weekly, monthly reflect the change
 
 with tab_daily:
     daily_log_fragment()
@@ -480,7 +540,7 @@ with tab_cal:
     components.html(html, height=330, scrolling=False)
 
     # Legend
-    st.caption("⬜ No habits logged  ·  Solid strip = single habit  ·  Colour boxes = multiple habits")
+    st.caption("⬜ No habits logged  |  Solid strip = single habit  |  Coloured boxes = multiple habits")
     st.divider()
 
     # Day detail (replaces the click-modal from React)
@@ -497,13 +557,14 @@ with tab_cal:
                     if entry["note"]:
                         st.caption(entry["note"])
                 with c3:
-                    st.metric("Progress", f"{entry['progress']}%", label_visibility="hidden")
+                    st.metric("Progress", f"Complete!", label_visibility="hidden")
     else:
         st.caption("No habits logged for this day.")
 
 
 # ── TAB: WEEKLY SUMMARY ───────────────────────────────────────────
-with tab_weekly:
+@st.fragment
+def weekly_fragment():
     st.subheader("📊 Weekly Summary")
     today = date.today()
     avail_weeks = get_available_weeks(today)
@@ -550,9 +611,13 @@ with tab_weekly:
                     else:
                         st.caption("No goal set")
 
+with tab_weekly:
+    weekly_fragment()
+
 
 # ── TAB: MONTHLY SUMMARY ──────────────────────────────────────────
-with tab_monthly:
+@st.fragment
+def monthly_fragment():
     st.subheader("📆 Monthly Summary")
     today = date.today()
     mc1, mc2 = st.columns(2)
@@ -604,9 +669,13 @@ with tab_monthly:
                     else:
                         st.caption("No goal set")
 
+with tab_monthly:
+    monthly_fragment()
+
 
 # ── TAB: GOALS ────────────────────────────────────────────────────
-with tab_goals:
+@st.fragment
+def goals_fragment():
     st.subheader("🎯 Set Goals")
     st.caption(
         "Set how many times **per week** you want to complete each habit. "
@@ -638,8 +707,12 @@ with tab_goals:
                     if hid not in data["goals"]:
                         data["goals"][hid] = {}
                     data["goals"][hid]["weeklyTarget"] = int(val)
-                    save_goal(hid, int(val), user_id)
+                    st.session_state.pending_goals[hid] = int(val)
                     goals_changed = True
 
         if goals_changed:
             st.toast("Goals saved!", icon="🎯")
+            st.rerun()  # full rerun so weekly + monthly tabs reflect new targets
+
+with tab_goals:
+    goals_fragment()
