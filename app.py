@@ -237,6 +237,22 @@ def tally_habits(checkins: dict, dates: list, habits: list):
     return counts
 
 
+def week_progress(hid: str, for_date: date, data: dict) -> tuple[int, int]:
+    """Return (done_this_week, weekly_goal) for a habit relative to for_date's week."""
+    goal  = data["goals"].get(hid, {}).get("weeklyTarget", 0)
+    if not goal:
+        return 0, 0
+    monday    = get_monday_of(for_date)
+    week_days = dates_in_range(monday, for_date)  # Mon → for_date (inclusive)
+    done      = sum(
+        1 for d in week_days
+        if normalize_entry(
+            data["checkins"].get(d.strftime("%Y-%m-%d"), {}).get(hid)
+        )["progress"] > 0
+    )
+    return done, goal
+
+
 def get_available_weeks(today: date):
     cur_mon = get_monday_of(today)
     prev_m  = today.month - 1 or 12
@@ -433,7 +449,20 @@ def daily_log_fragment():
     if iso not in data["checkins"]:
         data["checkins"][iso] = {}
 
-    for habit in data["habits"]:
+    # Sort: due-and-not-yet-done first, then done, then no goal / skipped
+    def habit_sort_key(h):
+        hid   = h["id"]
+        done, goal = week_progress(hid, sel_date, data)
+        entry = normalize_entry(data["checkins"][iso].get(hid))
+        if goal > 0 and entry["progress"] == 0:  # due, not done today
+            return (0, done - goal)               # most behind first
+        if entry["progress"] == 100:              # done today
+            return (2, 0)
+        return (1, 0)                             # no goal / skipped
+
+    sorted_habits = sorted(data["habits"], key=habit_sort_key)
+
+    for habit in sorted_habits:
         hid   = habit["id"]
         entry = normalize_entry(data["checkins"][iso].get(hid))
         cur_status = progress_to_status(entry["progress"])
@@ -441,8 +470,19 @@ def daily_log_fragment():
         with st.container(border=True):
             h1, h2 = st.columns([7, 2])
             with h1:
-                st.markdown(color_dot(habit["color"], 16) + f"**{habit['name']}**",
-                            unsafe_allow_html=True)
+                done, goal = week_progress(hid, sel_date, data)
+                due_badge  = ""
+                if goal > 0 and entry["progress"] == 0:
+                    remaining = goal - done
+                    due_badge = (
+                        f" <span style='background:#fff7ed;color:#c2410c;"
+                        f"padding:2px 8px;border-radius:999px;font-size:0.78rem;"
+                        f"font-weight:600'>🔔 {done}/{goal} this week</span>"
+                    )
+                st.markdown(
+                    color_dot(habit["color"], 16) + f"**{habit['name']}**" + due_badge,
+                    unsafe_allow_html=True,
+                )
             with h2:
                 label, pct, bg, fg = STATUS_OPTIONS[cur_status]
                 st.markdown(
