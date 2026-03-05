@@ -11,11 +11,11 @@ A Streamlit application to record your habits daily and analyse weekly and month
 
 - **Frontend / App**: [Streamlit](https://streamlit.io)
 - **Database**: [Supabase](https://supabase.com) (Postgres)
-- **Auth**: Supabase Auth with cookie-based session persistence
+- **Auth**: Supabase Auth
 
 ## Run locally
 
-1. Create a Supabase project at [supabase.com](https://supabase.com) and run the following SQL:
+1. Create a Supabase project at [supabase.com](https://supabase.com) and run the following SQL in the project editor:
 
 ```sql
 create table habits (
