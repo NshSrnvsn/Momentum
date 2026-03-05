@@ -72,8 +72,8 @@ def auth_wall():
     st.markdown(
         "<div style='text-align:center;margin-top:3rem'>"
         "<svg width='48' height='56' viewBox='0 0 48 56' fill='none' xmlns='http://www.w3.org/2000/svg' style='vertical-align:middle;margin-bottom:4px'>"
-        "<polygon points='4,2 44,2 24,26' fill='white'/>"
-        "<polygon points='4,54 44,54 24,30' fill='white'/>"
+        "<polygon points='4,2 44,2 24,26' fill='#1e3a8a' stroke='white' stroke-width='2' stroke-linejoin='round'/>"
+        "<polygon points='4,54 44,54 24,30' fill='#1e3a8a' stroke='white' stroke-width='2' stroke-linejoin='round'/>"
         "</svg>"
         "<span style='font-size:2.2rem;font-weight:700;vertical-align:middle;margin-left:12px'>Momentum</span>"
         "</div>"
@@ -111,7 +111,11 @@ def auth_wall():
                     get_auth_client().auth.sign_up({"email": email, "password": pwd})
                     st.success("Account created! Check your email to confirm, then log in.")
                 except Exception as e:
-                    st.error(f"Sign up failed: {e}")
+                    err = str(e).lower()
+                    if "rate limit" in err or "email rate" in err or "429" in err:
+                        st.error("Too many sign-up emails sent. Please wait a few minutes and try again, or check your inbox — the confirmation email may already be there.")
+                    else:
+                        st.error(f"Sign up failed: {e}")
 
     st.stop()
 
