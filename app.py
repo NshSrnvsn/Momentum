@@ -40,7 +40,15 @@ def auth_wall():
         return
 
     # ── try to restore session from cookie ────────────────────────
+    # On the very first render the CookieController component hasn't yet sent
+    # cookie values back to Python, so get() returns None. We wait one rerun
+    # (showing a spinner) before deciding to show the login form.
     saved = cookie_ctrl.get(_COOKIE_NAME)
+    if saved is None and not st.session_state.get("_cookies_ready"):
+        # First render — cookies not loaded yet; wait for component round-trip
+        st.session_state["_cookies_ready"] = True
+        with st.spinner(""):
+            st.stop()
     if saved:
         try:
             tokens = json.loads(saved) if isinstance(saved, str) else saved
@@ -62,7 +70,13 @@ def auth_wall():
 
     # ── login / signup UI ─────────────────────────────────────────
     st.markdown(
-        "<h1 style='text-align:center;margin-top:3rem'>� Momentum</h1>"
+        "<div style='text-align:center;margin-top:3rem'>"
+        "<svg width='48' height='56' viewBox='0 0 48 56' fill='none' xmlns='http://www.w3.org/2000/svg' style='vertical-align:middle;margin-bottom:4px'>"
+        "<polygon points='4,2 44,2 24,26' fill='white'/>"
+        "<polygon points='4,54 44,54 24,30' fill='white'/>"
+        "</svg>"
+        "<span style='font-size:2.2rem;font-weight:700;vertical-align:middle;margin-left:12px'>Momentum</span>"
+        "</div>"
         "<p style='text-align:center;color:#6b7280'>tiny habits. big life. let's go!</p>",
         unsafe_allow_html=True,
     )
@@ -344,7 +358,7 @@ with st.sidebar:
     st.caption(st.session_state.get("user_email", ""))
     if st.button("Log Out", use_container_width=True):
         cookie_ctrl.remove(_COOKIE_NAME)
-        for key in ["user_id", "user_email", "data", "data_user"]:
+        for key in ["user_id", "user_email", "data", "data_user", "_cookies_ready"]:
             st.session_state.pop(key, None)
         st.rerun()
     st.divider()
