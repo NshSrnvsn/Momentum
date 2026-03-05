@@ -109,7 +109,7 @@ def auth_wall():
             if st.button("Create Account", type="primary", use_container_width=True):
                 try:
                     get_auth_client().auth.sign_up({"email": email, "password": pwd})
-                    st.success("Account created! Check your email to confirm, then log in.")
+                    st.success("Account created! Proceed to log in.")
                 except Exception as e:
                     err = str(e).lower()
                     if "rate limit" in err or "email rate" in err or "429" in err:
