@@ -62,8 +62,8 @@ def auth_wall():
 
     # ── login / signup UI ─────────────────────────────────────────
     st.markdown(
-        "<h1 style='text-align:center;margin-top:3rem'>🏃 Momentum</h1>"
-        "<p style='text-align:center;color:#6b7280'>Your personal habit tracker</p>",
+        "<h1 style='text-align:center;margin-top:3rem'>� Momentum</h1>"
+        "<p style='text-align:center;color:#6b7280'>tiny habits. big life. let's go!</p>",
         unsafe_allow_html=True,
     )
     col = st.columns([1, 2, 1])[1]
